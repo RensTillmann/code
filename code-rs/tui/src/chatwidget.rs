@@ -23663,6 +23663,60 @@ Have we met every part of this goal and is there no further work to do?"#
             host,
             port
         );
+
+        // WSL2 Pre-flight Check: Test connection before attempting to connect
+        if code_browser::wsl::is_wsl() && port.is_some() {
+            let test_port = port.unwrap();
+            let gateway_ip = code_browser::wsl::get_wsl_gateway_ip();
+            let test_host = host.clone().or(gateway_ip.clone()).unwrap_or_else(|| "127.0.0.1".to_string());
+
+            tracing::info!("[wsl] Pre-flight check: testing {}:{}", test_host, test_port);
+
+            // Test connection in a blocking manner
+            let (test_tx, test_rx) = std::sync::mpsc::channel();
+            let test_host_clone = test_host.clone();
+            tokio::spawn(async move {
+                let can_connect = code_browser::wsl::test_chrome_connection(&test_host_clone, test_port).await;
+                let _ = test_tx.send(can_connect);
+            });
+
+            // Wait for test result (with timeout)
+            let can_connect = test_rx
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap_or(false);
+
+            if !can_connect {
+                tracing::warn!("[wsl] Pre-flight check failed - Chrome not reachable");
+
+                // Generate setup script and show instructions
+                if let Some(gw_ip) = gateway_ip {
+                    match code_browser::wsl::save_setup_script(&gw_ip, test_port) {
+                        Ok(script_path) => {
+                            let guide = code_browser::wsl::get_wsl_interactive_guide(
+                                &gw_ip,
+                                test_port,
+                                &script_path,
+                            );
+
+                            // Show the setup guide to the user
+                            self.push_background_tail(guide);
+                            tracing::info!("[wsl] Setup guide displayed to user");
+                            return; // Don't proceed with connection attempt
+                        }
+                        Err(e) => {
+                            tracing::error!("[wsl] Failed to save setup script: {}", e);
+                            // Fall through to normal connection attempt (will fail with existing error handling)
+                        }
+                    }
+                } else {
+                    tracing::error!("[wsl] Could not detect WSL gateway IP");
+                    // Fall through to normal connection attempt
+                }
+            } else {
+                tracing::info!("[wsl] Pre-flight check passed - Chrome is reachable");
+            }
+        }
+
         self.browser_is_external = true;
         let latest_screenshot = self.latest_browser_screenshot.clone();
         let app_event_tx = self.app_event_tx.clone();
