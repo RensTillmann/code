@@ -2939,6 +2939,11 @@ impl App<'_> {
                         widget.push_background_tail(instructions);
                     }
                 }
+                AppEvent::RunWslSetupScript(script_path) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.run_wsl_setup_script(script_path);
+                    }
+                }
                 AppEvent::JumpBack {
                     nth,
                     prefill,

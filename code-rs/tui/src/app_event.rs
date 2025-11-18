@@ -433,6 +433,9 @@ pub(crate) enum AppEvent {
     /// Show WSL2 Chrome setup instructions
     ShowWslSetupInstructions(String),
 
+    /// Run WSL2 Chrome setup script as Administrator
+    RunWslSetupScript(String),
+
     /// Start a new chat session by resuming from the given rollout file
     ResumeFrom(std::path::PathBuf),
 

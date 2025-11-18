@@ -23918,54 +23918,43 @@ Have we met every part of this goal and is there no further work to do?"#
         use crate::bottom_pane::list_selection_view::SelectionItem;
         use crate::bottom_pane::list_selection_view::ListSelectionView;
 
-        let chrome_path = code_browser::wsl::detect_chrome_path()
-            .unwrap_or_else(|| "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe".to_string());
-
         let mut items = Vec::new();
 
-        // Option 1: View setup instructions
-        let gw_clone = gateway_ip.clone();
-        let chrome_clone = chrome_path.clone();
-        let script_clone_for_action = script_path.clone();
+        // Option 1: Run Automatic Setup (launches PowerShell as Admin)
+        let script_clone_for_auto = script_path.clone();
         items.push(SelectionItem {
-            name: "📋 View setup instructions".to_string(),
-            description: Some("Show detailed PowerShell commands for port forwarding and firewall setup".to_string()),
+            name: "🔧 Run Automatic Setup".to_string(),
+            description: Some("Launches PowerShell script as Administrator to configure port forwarding and firewall\nYou'll need to click 'Yes' on the Windows UAC prompt".to_string()),
+            is_current: true,
+            actions: vec![Box::new(move |tx: &crate::app_event_sender::AppEventSender| {
+                tx.send(AppEvent::RunWslSetupScript(script_clone_for_auto.clone()));
+            })],
+        });
+
+        // Option 2: View Manual Steps (fallback)
+        let gw_clone = gateway_ip.clone();
+        let script_clone_for_manual = script_path.clone();
+        items.push(SelectionItem {
+            name: "📋 View Manual Steps".to_string(),
+            description: Some("Show PowerShell commands to run manually if automatic setup doesn't work".to_string()),
             is_current: false,
             actions: vec![Box::new(move |tx: &crate::app_event_sender::AppEventSender| {
                 let instructions = code_browser::wsl::get_wsl_interactive_guide(
                     &gw_clone,
                     port,
-                    &script_clone_for_action,
+                    &script_clone_for_manual,
                 );
-                // Send the instructions as a background event
                 tx.send(AppEvent::ShowWslSetupInstructions(instructions));
             })],
         });
 
-        // Option 2: Copy PowerShell script path
-        let script_clone = script_path.clone();
-        items.push(SelectionItem {
-            name: "📄 Auto-generated setup script ready".to_string(),
-            description: Some(format!("Script saved to: {}\nRun in PowerShell as Administrator to configure automatically", script_clone)),
-            is_current: true,
-            actions: vec![],
-        });
-
-        // Option 3: Show Chrome launch command
-        items.push(SelectionItem {
-            name: "🚀 Launch Chrome with debugging".to_string(),
-            description: Some(format!("After setup, run:\n& \"{}\" --remote-debugging-port={}", chrome_clone, port)),
-            is_current: false,
-            actions: vec![],
-        });
-
         let view = ListSelectionView::new(
-            " WSL2 Chrome Setup Required ".to_string(),
-            Some(format!("Chrome not accessible from WSL2 on {}:{}\nOne-time setup needed for port forwarding and firewall rules", gateway_ip, port)),
-            Some("Enter select · Esc close".to_string()),
+            " WSL2 One-Time Setup Required ".to_string(),
+            Some(format!("Chrome not accessible from WSL2 on {}:{}\nPort forwarding and firewall configuration needed", gateway_ip, port)),
+            Some("Enter select · Esc cancel".to_string()),
             items,
             self.app_event_tx.clone(),
-            6,
+            4,
         );
 
         self.bottom_pane.show_list_selection(
@@ -23975,6 +23964,74 @@ Have we met every part of this goal and is there no further work to do?"#
             view,
         );
         self.request_redraw();
+    }
+
+    /// Execute the WSL2 Chrome setup script as Administrator on Windows
+    pub(crate) fn run_wsl_setup_script(&mut self, script_path: String) {
+        // Convert Windows path to something safe for command execution
+        let script_path_escaped = script_path.replace("'", "''");
+
+        // PowerShell command to run the script as Administrator
+        // This will launch PowerShell with elevation, triggering UAC prompt
+        let powershell_command = format!(
+            "Start-Process powershell -ArgumentList '-ExecutionPolicy Bypass -File \"{}\"' -Verb RunAs",
+            script_path_escaped
+        );
+
+        self.push_background_tail(format!("🔧 Launching Windows setup script as Administrator...\n\nScript: {}\n\nPlease click 'Yes' on the UAC prompt to allow the setup to run.", script_path));
+
+        // Execute the PowerShell command from WSL2
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let output = tokio::process::Command::new("powershell.exe")
+                .arg("-Command")
+                .arg(&powershell_command)
+                .output()
+                .await;
+
+            match output {
+                Ok(result) => {
+                    if result.status.success() {
+                        let success_msg = format!(
+                            "✅ Setup script launched successfully!\n\n\
+                            Next steps:\n\
+                            1. Click 'Yes' on the UAC prompt if it appears\n\
+                            2. Wait for the setup script to complete\n\
+                            3. Launch Chrome with remote debugging:\n\
+                               powershell.exe -Command \"& 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe' --remote-debugging-port=9222\"\n\
+                            4. Run /chrome 9222 again to connect"
+                        );
+                        app_event_tx.send_background_event_with_placement_and_order(
+                            success_msg,
+                            crate::app_event::BackgroundPlacement::Tail,
+                            None,
+                        );
+                    } else {
+                        let stderr = String::from_utf8_lossy(&result.stderr);
+                        app_event_tx.send_background_event_with_placement_and_order(
+                            format!(
+                                "⚠️ Setup script launch may have failed.\n\nError: {}\n\n\
+                                You can try running it manually in PowerShell as Administrator:\n{}",
+                                stderr, script_path
+                            ),
+                            crate::app_event::BackgroundPlacement::Tail,
+                            None,
+                        );
+                    }
+                }
+                Err(e) => {
+                    app_event_tx.send_background_event_with_placement_and_order(
+                        format!(
+                            "❌ Failed to launch setup script: {}\n\n\
+                            Please run it manually in PowerShell as Administrator:\n{}",
+                            e, script_path
+                        ),
+                        crate::app_event::BackgroundPlacement::Tail,
+                        None,
+                    );
+                }
+            }
+        });
     }
 
     /// Programmatically submit a user text message as if typed in the
