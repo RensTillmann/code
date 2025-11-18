@@ -21665,6 +21665,45 @@ Have we met every part of this goal and is there no further work to do?"#
         let launch_port = port.unwrap_or(9222);
         let ticket = self.make_background_tail_ticket();
 
+        // WSL2 Detection: Intercept Chrome launch options and show WSL2 setup instead
+        if code_browser::wsl::is_wsl() {
+            match option {
+                ChromeLaunchOption::CloseAndUseProfile | ChromeLaunchOption::UseTempProfile => {
+                    // On WSL2, we can't launch Chrome directly - show WSL2 setup menu
+                    let gateway_ip = code_browser::wsl::get_wsl_gateway_ip();
+                    if let Some(gw_ip) = gateway_ip {
+                        match code_browser::wsl::save_setup_script(&gw_ip, launch_port) {
+                            Ok(script_path) => {
+                                self.show_wsl_chrome_setup_menu(gw_ip, launch_port, script_path);
+                                return; // Don't proceed with normal Chrome launch
+                            }
+                            Err(e) => {
+                                tracing::error!("[wsl] Failed to save setup script: {}", e);
+                                self.push_background_tail(format!(
+                                    "❌ WSL2 detected but failed to generate setup script: {}\n\n\
+                                    Please run '/chrome {}' to set up WSL2 Chrome connection manually.",
+                                    e, launch_port
+                                ));
+                                return;
+                            }
+                        }
+                    } else {
+                        self.push_background_tail(
+                            "❌ WSL2 detected but could not determine gateway IP.\n\n\
+                            Please use '/browser' for the internal browser instead, or run '/chrome 9222' and follow the manual setup instructions.".to_string()
+                        );
+                        return;
+                    }
+                }
+                ChromeLaunchOption::UseInternalBrowser => {
+                    // Internal browser works fine on WSL2 - proceed normally
+                }
+                ChromeLaunchOption::Cancel => {
+                    // Cancel works everywhere - proceed normally
+                }
+            }
+        }
+
         match option {
             ChromeLaunchOption::CloseAndUseProfile => {
                 // Kill existing Chrome and launch with user profile
