@@ -2,6 +2,7 @@ use crate::BrowserError;
 use crate::Result;
 use crate::config::BrowserConfig;
 use crate::page::Page;
+use crate::wsl;
 use chromiumoxide::Browser;
 use chromiumoxide::BrowserConfig as CdpConfig;
 use chromiumoxide::browser::HeadlessMode;
@@ -291,7 +292,7 @@ impl BrowserManager {
 
         // Only try CDP connection via port, no fallback
         if let Some(port) = config.connect_port {
-            let host = config.connect_host.as_deref().unwrap_or("127.0.0.1");
+            let host = wsl::get_chrome_host(config.connect_host.as_deref());
             let actual_port = if port == 0 {
                 info!("Auto-scanning for Chrome debug ports...");
                 let start = tokio::time::Instant::now();
@@ -313,17 +314,25 @@ impl BrowserManager {
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
                 let ws = loop {
                     let discover_start = tokio::time::Instant::now();
-                    match discover_ws_via_host_port(host, actual_port).await {
+                    match discover_ws_via_host_port(&host, actual_port).await {
                         Ok(ws) => {
                             info!("[cdp/bm] WS discovered in {:?}: {}", discover_start.elapsed(), ws);
                             break ws;
                         }
                         Err(e) => {
                             if tokio::time::Instant::now() >= deadline {
-                                return Err(BrowserError::CdpError(format!(
+                                let mut error_msg = format!(
                                     "Failed to discover Chrome WebSocket on port {} within 15s: {}",
                                     actual_port, e
-                                )));
+                                );
+
+                                // Add WSL2 setup guide if running in WSL
+                                if let Some(guide) = wsl::get_wsl_setup_guide() {
+                                    error_msg.push_str("\n\n");
+                                    error_msg.push_str(&guide);
+                                }
+
+                                return Err(BrowserError::CdpError(error_msg));
                             }
                             tokio::time::sleep(Duration::from_millis(300)).await;
                         }
@@ -498,7 +507,7 @@ impl BrowserManager {
         }
 
         if let Some(port) = config.connect_port {
-            let host = config.connect_host.as_deref().unwrap_or("127.0.0.1");
+            let host = wsl::get_chrome_host(config.connect_host.as_deref());
             let actual_port = if port == 0 {
                 info!("Auto-scanning for Chrome debug ports...");
                 let start = tokio::time::Instant::now();
@@ -518,7 +527,7 @@ impl BrowserManager {
                 info!("Step 1: Discovering Chrome WebSocket URL via {}:{}...", host, actual_port);
                 let ws = loop {
                     let discover_start = tokio::time::Instant::now();
-                    match discover_ws_via_host_port(host, actual_port).await {
+                    match discover_ws_via_host_port(&host, actual_port).await {
                         Ok(ws) => {
                             info!(
                                 "Step 2: WebSocket URL discovered in {:?}: {}",
@@ -529,10 +538,18 @@ impl BrowserManager {
                         }
                         Err(e) => {
                             if tokio::time::Instant::now() - discover_start > Duration::from_secs(15) {
-                                return Err(BrowserError::CdpError(format!(
+                                let mut error_msg = format!(
                                     "Failed to discover Chrome WebSocket on port {} within 15s: {}",
                                     actual_port, e
-                                )));
+                                );
+
+                                // Add WSL2 setup guide if running in WSL
+                                if let Some(guide) = wsl::get_wsl_setup_guide() {
+                                    error_msg.push_str("\n\n");
+                                    error_msg.push_str(&guide);
+                                }
+
+                                return Err(BrowserError::CdpError(error_msg));
                             }
                             tokio::time::sleep(Duration::from_millis(300)).await;
                         }

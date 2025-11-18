@@ -5,6 +5,7 @@ pub mod hooks;
 pub mod manager;
 pub mod page;
 pub mod tools;
+pub mod wsl;
 
 pub use config::BrowserConfig;
 pub use config::ViewportConfig;
