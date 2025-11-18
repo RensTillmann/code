@@ -97,43 +97,134 @@ pub fn get_chrome_host(explicit_host: Option<&str>) -> String {
     "127.0.0.1".to_string()
 }
 
+/// Query Windows Registry for Chrome installation path
+///
+/// Uses PowerShell to query the registry for the Chrome installation path
+fn query_chrome_registry_path() -> Option<String> {
+    // Try to get Chrome path from Windows Registry via PowerShell
+    let registry_queries = vec![
+        // Google Chrome
+        r"(Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe' -ErrorAction SilentlyContinue).'(Default)'",
+        r"(Get-ItemProperty -Path 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe' -ErrorAction SilentlyContinue).'(Default)'",
+        // Microsoft Edge
+        r"(Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe' -ErrorAction SilentlyContinue).'(Default)'",
+    ];
+
+    for query in registry_queries {
+        if let Ok(output) = Command::new("powershell.exe")
+            .args(&["-NoProfile", "-Command", query])
+            .output()
+        {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() && path != "null" && !path.contains("error") {
+                debug!("[wsl] Found Chrome via registry: {}", path);
+                // Verify the path exists
+                if verify_chrome_path(&path) {
+                    return Some(path);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Verify that a Chrome executable path is valid
+///
+/// Checks if the file exists and is executable
+fn verify_chrome_path(windows_path: &str) -> bool {
+    // Convert Windows path to WSL path for checking
+    // Handle any drive letter (C:, D:, E:, etc.)
+    let wsl_path = windows_to_wsl_path(windows_path);
+
+    let path = std::path::Path::new(&wsl_path);
+
+    if !path.exists() {
+        debug!("[wsl] Path does not exist: {}", wsl_path);
+        return false;
+    }
+
+    if !path.is_file() {
+        debug!("[wsl] Path is not a file: {}", wsl_path);
+        return false;
+    }
+
+    // Check if it's executable (on Windows, .exe files are executable)
+    if !wsl_path.to_lowercase().ends_with(".exe") {
+        debug!("[wsl] Path is not an executable: {}", wsl_path);
+        return false;
+    }
+
+    debug!("[wsl] Verified Chrome path: {}", windows_path);
+    true
+}
+
+/// Convert Windows path to WSL path
+///
+/// Handles any drive letter (C:, D:, E:, etc.)
+fn windows_to_wsl_path(windows_path: &str) -> String {
+    let path = windows_path.trim();
+
+    // Handle paths like "C:\Program Files\..." or "C:/Program Files/..."
+    if path.len() >= 3 && path.chars().nth(1) == Some(':') {
+        let drive = path.chars().nth(0).unwrap().to_lowercase();
+        let rest = &path[2..].replace('\\', "/");
+        format!("/mnt/{}{}", drive, rest)
+    } else {
+        // Already a WSL-style path or invalid
+        path.replace('\\', "/")
+    }
+}
+
 /// Detect Chrome installation path on Windows from WSL2
 ///
-/// Checks common installation locations for Chrome, Edge, and Chromium
+/// Tries multiple methods in order of reliability:
+/// 1. Windows Registry query (most reliable)
+/// 2. Common installation paths across multiple drives
+/// 3. Returns None if not found (user can specify manually)
 pub fn detect_chrome_path() -> Option<String> {
     if !is_wsl() {
         return None;
     }
 
-    // Common Chrome/Chromium browser paths (in order of preference)
-    let chrome_paths = vec![
-        // Google Chrome (64-bit)
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        // Google Chrome (32-bit)
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        // Microsoft Edge (Chromium-based)
-        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    info!("[wsl] Detecting Chrome installation path...");
+
+    // Method 1: Try Windows Registry (most reliable)
+    if let Some(path) = query_chrome_registry_path() {
+        info!("[wsl] Chrome detected via registry: {}", path);
+        return Some(path);
+    }
+
+    // Method 2: Check common paths across multiple drives
+    let drives = vec!["C", "D", "E", "F"];
+    let browser_paths = vec![
+        // Google Chrome
+        (r"\Program Files\Google\Chrome\Application\chrome.exe", "Google Chrome"),
+        (r"\Program Files (x86)\Google\Chrome\Application\chrome.exe", "Google Chrome (x86)"),
+        // Microsoft Edge
+        (r"\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", "Microsoft Edge (x86)"),
+        (r"\Program Files\Microsoft\Edge\Application\msedge.exe", "Microsoft Edge"),
         // Chromium
-        r"C:\Program Files\Chromium\Application\chrome.exe",
-        r"C:\Program Files (x86)\Chromium\Application\chrome.exe",
+        (r"\Program Files\Chromium\Application\chrome.exe", "Chromium"),
+        (r"\Program Files (x86)\Chromium\Application\chrome.exe", "Chromium (x86)"),
         // Brave
-        r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
-        r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
+        (r"\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe", "Brave"),
+        (r"\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe", "Brave (x86)"),
     ];
 
-    // Check each path by trying to access it from WSL
-    for windows_path in chrome_paths {
-        // Convert Windows path to WSL path for checking
-        let wsl_path = windows_path.replace("C:", "/mnt/c").replace('\\', "/");
+    for drive in drives {
+        for (path_suffix, name) in &browser_paths {
+            let windows_path = format!("{}:{}", drive, path_suffix);
 
-        if std::path::Path::new(&wsl_path).exists() {
-            debug!("[wsl] Found Chrome at: {}", windows_path);
-            return Some(windows_path.to_string());
+            if verify_chrome_path(&windows_path) {
+                info!("[wsl] Chrome detected at {}: {}", drive, name);
+                return Some(windows_path);
+            }
         }
     }
 
     warn!("[wsl] Could not auto-detect Chrome installation path");
+    warn!("[wsl] User will need to specify Chrome path manually");
     None
 }
 
@@ -349,13 +440,21 @@ For more details, see: https://github.com/just-every/code/issues/278
 /// Get interactive setup instructions for WSL2 users
 pub fn get_wsl_interactive_guide(gateway_ip: &str, port: u16, script_path: &str) -> String {
     let chrome_path = detect_chrome_path();
-    let chrome_cmd = if let Some(path) = &chrome_path {
-        format!(r#"& "{}" --remote-debugging-port={} --user-data-dir=C:\temp\chrome-debug"#, path, port)
+
+    let (chrome_cmd, chrome_note) = if let Some(path) = &chrome_path {
+        (
+            format!(r#"& "{}" --remote-debugging-port={} --user-data-dir=C:\temp\chrome-debug"#, path, port),
+            format!("✓ Chrome detected at: {}", path)
+        )
     } else {
-        format!(
-            r#"& "C:\Path\To\Chrome.exe" --remote-debugging-port={} --user-data-dir=C:\temp\chrome-debug
-# NOTE: Chrome path not auto-detected. Update the path above to your Chrome installation."#,
-            port
+        (
+            format!(r#"& "C:\Path\To\Your\Chrome.exe" --remote-debugging-port={} --user-data-dir=C:\temp\chrome-debug"#, port),
+            "⚠ Chrome path not auto-detected. Please update the path above.
+
+To find your Chrome installation:
+  - Open PowerShell and run: Get-Command chrome.exe | Select-Object Source
+  - Or check: C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe
+  - Or use Edge: C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe".to_string()
         )
     };
 
@@ -376,6 +475,8 @@ To run it:
   2. Run: {}
   3. Follow the prompts
 
+The script will automatically configure port forwarding and firewall rules.
+
 Option 2: Manual setup (copy/paste these commands)
 ---------------------------------------------------
 In PowerShell as Administrator, run:
@@ -390,9 +491,14 @@ After setup, launch Chrome on Windows:
 ---------------------------------------
 {}
 
+{}
+
 Then run '/chrome {}' again from Code CLI.
 
-This is a ONE-TIME setup. After this, you only need to launch Chrome each session.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+This is a ONE-TIME setup. Port forwarding and firewall rules persist across reboots.
+After setup, you only need to launch Chrome each session.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 "#,
         script_path,
         script_path,
@@ -402,6 +508,7 @@ This is a ONE-TIME setup. After this, you only need to launch Chrome each sessio
         port,
         gateway_ip,
         chrome_cmd,
+        chrome_note,
         port
     )
 }
@@ -423,5 +530,38 @@ mod tests {
         {
             assert_eq!(get_chrome_host(None), "127.0.0.1");
         }
+    }
+
+    #[test]
+    fn test_windows_to_wsl_path() {
+        assert_eq!(
+            windows_to_wsl_path(r"C:\Program Files\Chrome\chrome.exe"),
+            "/mnt/c/Program Files/Chrome/chrome.exe"
+        );
+        assert_eq!(
+            windows_to_wsl_path(r"D:\Apps\Chrome\chrome.exe"),
+            "/mnt/d/Apps/Chrome/chrome.exe"
+        );
+        assert_eq!(
+            windows_to_wsl_path("C:/Program Files/Chrome/chrome.exe"),
+            "/mnt/c/Program Files/Chrome/chrome.exe"
+        );
+        // Test already WSL path
+        assert_eq!(
+            windows_to_wsl_path("/mnt/c/test"),
+            "/mnt/c/test"
+        );
+    }
+
+    #[test]
+    fn test_generate_setup_script() {
+        let script = generate_setup_script("172.21.48.1", 9222);
+
+        // Check that script contains key elements
+        assert!(script.contains("172.21.48.1"));
+        assert!(script.contains("9222"));
+        assert!(script.contains("netsh interface portproxy"));
+        assert!(script.contains("New-NetFirewallRule"));
+        assert!(script.contains("Administrator"));
     }
 }
