@@ -534,22 +534,38 @@ mod tests {
 
     #[test]
     fn test_windows_to_wsl_path() {
+        // Test with spaces (common in Windows paths)
         assert_eq!(
             windows_to_wsl_path(r"C:\Program Files\Chrome\chrome.exe"),
             "/mnt/c/Program Files/Chrome/chrome.exe"
         );
         assert_eq!(
+            windows_to_wsl_path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+            "/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe"
+        );
+
+        // Test different drives
+        assert_eq!(
             windows_to_wsl_path(r"D:\Apps\Chrome\chrome.exe"),
             "/mnt/d/Apps/Chrome/chrome.exe"
         );
+
+        // Test forward slashes
         assert_eq!(
             windows_to_wsl_path("C:/Program Files/Chrome/chrome.exe"),
             "/mnt/c/Program Files/Chrome/chrome.exe"
         );
+
         // Test already WSL path
         assert_eq!(
             windows_to_wsl_path("/mnt/c/test"),
             "/mnt/c/test"
+        );
+
+        // Test path with multiple spaces and special chars
+        assert_eq!(
+            windows_to_wsl_path(r"E:\My Documents\Test (1)\chrome.exe"),
+            "/mnt/e/My Documents/Test (1)/chrome.exe"
         );
     }
 
