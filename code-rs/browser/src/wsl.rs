@@ -321,23 +321,44 @@ if (-not $isAdmin) {{
     exit 1
 }}
 
-Write-Host "Step 1: Setting up port forwarding..." -ForegroundColor Green
+Write-Host "Step 1: Ensuring IPv6 is enabled (required for port forwarding)..." -ForegroundColor Green
 try {{
-    # Remove any existing port proxy on this port
-    netsh interface portproxy delete v4tov4 listenport={port} listenaddress={gateway_ip} 2>$null
+    # Enable IPv6 on network adapters - required for netsh portproxy even for IPv4
+    $ipv6Status = Get-NetAdapterBinding -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue | Where-Object {{ $_.Enabled -eq $false }}
+    if ($ipv6Status) {{
+        Write-Host "  Enabling IPv6 on network adapters..." -ForegroundColor Yellow
+        Enable-NetAdapterBinding -Name "*" -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue
+    }}
+    Write-Host "  IPv6 is enabled" -ForegroundColor White
+}} catch {{
+    Write-Host "  Warning: Could not verify IPv6 status, continuing anyway..." -ForegroundColor Yellow
+}}
+
+Write-Host ""
+Write-Host "Step 2: Setting up port forwarding..." -ForegroundColor Green
+try {{
+    # Remove any existing port proxy on this port (suppress errors if it doesn't exist)
+    $null = netsh interface portproxy delete v4tov4 listenport={port} listenaddress={gateway_ip} 2>&1
 
     # Add new port proxy
-    netsh interface portproxy add v4tov4 listenport={port} listenaddress={gateway_ip} connectport={port} connectaddress=127.0.0.1
+    $result = netsh interface portproxy add v4tov4 listenport={port} listenaddress={gateway_ip} connectport={port} connectaddress=127.0.0.1
+    if ($LASTEXITCODE -ne 0) {{
+        throw "netsh command failed with exit code $LASTEXITCODE"
+    }}
 
     Write-Host "  Port forwarding configured: {gateway_ip}:{port} -> 127.0.0.1:{port}" -ForegroundColor White
 }} catch {{
     Write-Host "  ERROR: Failed to set up port forwarding: $_" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "  Troubleshooting:" -ForegroundColor Yellow
+    Write-Host "  - Make sure IP Helper service is running: Get-Service iphlpsvc" -ForegroundColor White
+    Write-Host "  - IPv6 must be enabled for portproxy to work" -ForegroundColor White
     Read-Host "Press Enter to exit"
     exit 1
 }}
 
 Write-Host ""
-Write-Host "Step 2: Configuring Windows Firewall..." -ForegroundColor Green
+Write-Host "Step 3: Configuring Windows Firewall..." -ForegroundColor Green
 try {{
     # Remove any existing rule with this name
     Remove-NetFirewallRule -DisplayName "Chrome Debug Port for WSL2" -ErrorAction SilentlyContinue
