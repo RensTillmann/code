@@ -23688,19 +23688,13 @@ Have we met every part of this goal and is there no further work to do?"#
             if !can_connect {
                 tracing::warn!("[wsl] Pre-flight check failed - Chrome not reachable");
 
-                // Generate setup script and show instructions
+                // Generate setup script and show interactive menu
                 if let Some(gw_ip) = gateway_ip {
                     match code_browser::wsl::save_setup_script(&gw_ip, test_port) {
                         Ok(script_path) => {
-                            let guide = code_browser::wsl::get_wsl_interactive_guide(
-                                &gw_ip,
-                                test_port,
-                                &script_path,
-                            );
-
-                            // Show the setup guide to the user
-                            self.push_background_tail(guide);
-                            tracing::info!("[wsl] Setup guide displayed to user");
+                            // Show interactive setup menu instead of text dump
+                            self.show_wsl_chrome_setup_menu(gw_ip, test_port, script_path);
+                            tracing::info!("[wsl] Setup menu displayed to user");
                             return; // Don't proceed with connection attempt
                         }
                         Err(e) => {
@@ -23916,6 +23910,71 @@ Have we met every part of this goal and is there no further work to do?"#
         }
         tracing::info!("[cdp] parsed host={:?}, port={:?}", host, port);
         self.handle_chrome_connection(host, port, chrome_ticket);
+    }
+
+    /// Show interactive WSL2 Chrome setup menu with selectable options
+    fn show_wsl_chrome_setup_menu(&mut self, gateway_ip: String, port: u16, script_path: String) {
+        use crate::app_event::AppEvent;
+        use crate::bottom_pane::list_selection_view::SelectionItem;
+        use crate::bottom_pane::list_selection_view::ListSelectionView;
+
+        let chrome_path = code_browser::wsl::detect_chrome_path()
+            .unwrap_or_else(|| "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe".to_string());
+
+        let mut items = Vec::new();
+
+        // Option 1: View setup instructions
+        let gw_clone = gateway_ip.clone();
+        let chrome_clone = chrome_path.clone();
+        let script_clone_for_action = script_path.clone();
+        items.push(SelectionItem {
+            name: "📋 View setup instructions".to_string(),
+            description: Some("Show detailed PowerShell commands for port forwarding and firewall setup".to_string()),
+            is_current: false,
+            actions: vec![Box::new(move |tx: &crate::app_event_sender::AppEventSender| {
+                let instructions = code_browser::wsl::get_wsl_interactive_guide(
+                    &gw_clone,
+                    port,
+                    &script_clone_for_action,
+                );
+                // Send the instructions as a background event
+                tx.send(AppEvent::ShowWslSetupInstructions(instructions));
+            })],
+        });
+
+        // Option 2: Copy PowerShell script path
+        let script_clone = script_path.clone();
+        items.push(SelectionItem {
+            name: "📄 Auto-generated setup script ready".to_string(),
+            description: Some(format!("Script saved to: {}\nRun in PowerShell as Administrator to configure automatically", script_clone)),
+            is_current: true,
+            actions: vec![],
+        });
+
+        // Option 3: Show Chrome launch command
+        items.push(SelectionItem {
+            name: "🚀 Launch Chrome with debugging".to_string(),
+            description: Some(format!("After setup, run:\n& \"{}\" --remote-debugging-port={}", chrome_clone, port)),
+            is_current: false,
+            actions: vec![],
+        });
+
+        let view = ListSelectionView::new(
+            " WSL2 Chrome Setup Required ".to_string(),
+            Some(format!("Chrome not accessible from WSL2 on {}:{}\nOne-time setup needed for port forwarding and firewall rules", gateway_ip, port)),
+            Some("Enter select · Esc close".to_string()),
+            items,
+            self.app_event_tx.clone(),
+            6,
+        );
+
+        self.bottom_pane.show_list_selection(
+            "WSL2 Chrome Setup".to_string(),
+            None,
+            None,
+            view,
+        );
+        self.request_redraw();
     }
 
     /// Programmatically submit a user text message as if typed in the

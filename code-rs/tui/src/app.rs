@@ -2934,6 +2934,11 @@ impl App<'_> {
                         widget.handle_chrome_launch_option(option, port);
                     }
                 }
+                AppEvent::ShowWslSetupInstructions(instructions) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.push_background_tail(instructions);
+                    }
+                }
                 AppEvent::JumpBack {
                     nth,
                     prefill,

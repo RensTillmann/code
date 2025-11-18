@@ -430,6 +430,9 @@ pub(crate) enum AppEvent {
     /// Chrome launch option selected by user
     ChromeLaunchOptionSelected(ChromeLaunchOption, Option<u16>),
 
+    /// Show WSL2 Chrome setup instructions
+    ShowWslSetupInstructions(String),
+
     /// Start a new chat session by resuming from the given rollout file
     ResumeFrom(std::path::PathBuf),
 
